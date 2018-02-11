@@ -4,9 +4,11 @@
         Notice: This is lua code for MJ algorithm
 --]]
 
+local skynet = require "skynet"
 local MJ_Algorithm = {}
 
 ----------------------------------------通用函数----------------------------------------
+
 local MJ_CardArray = {
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,					-- 万子
 	0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,					-- 索子
@@ -14,6 +16,22 @@ local MJ_CardArray = {
 	0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,                               -- 东~白
 	0x41, 0x42, 0x43, 0x44,	0x45, 0x46, 0x47, 0x48						    -- 春~菊
 }
+
+local function getcolor(value)
+    return math.floor(value/0x10)
+end
+
+local function getvalue(value)
+    return value%0x10
+end
+
+local function SwitchToCardIndex(card)
+    return (getcolor(card) * 9 + getvalue(card))
+end
+
+local function SwitchToCardData(cardIndex)
+    return (math.floor((cardIndex - 1) / 9) * 16 + (cardIndex - 1) % 9 + 1)
+end
 
 --删除单个
 local function Delarray(list, dellist)
@@ -144,25 +162,50 @@ end
 --     -- PrintTableBy64(...)
 -- end
 
+local function check_data_validity(cardList, relyCard)
+    if type(cardList) ~= "table" or type(relyCard) ~= "number" then
+        return false
+    end
+    if #cardList == 0 or #cardList > 17 then
+        return false
+    end
+    -- for i = 1, #cardList do
+    --     if not cardList[i] or getcolor(cardList[i]) >= 4 then
+    --         return false
+    --     end
+    -- end
+    return true
+end
+
 ----------------------------------------通用函数----------------------------------------
 
+------------------------------------调用algorithm部分-----------------------------------
+
+function MJ_Algorithm:hupai(cardList, relyCard)
+    if not check_data_validity(cardList, relyCard) then
+        return false
+    end
+    local ishu = skynet.call("algorithm", "lua", "hupai", cardList, relyCard)
+    return ishu == 1
+end
+
+function MJ_Algorithm:canhu(cardList, relyCard)
+    if not check_data_validity(cardList, relyCard) then
+        return {}
+    end
+    return skynet.call("algorithm", "lua", "canhu", cardList, relyCard)
+end
+
+function MJ_Algorithm:tinghu(cardList, relyCard)
+    if not check_data_validity(cardList, relyCard) then
+        return {}
+    end
+    return skynet.call("algorithm", "lua", "tinghu", cardList, relyCard)
+end
+
+------------------------------------调用algorithm部分-----------------------------------
+
 ----------------------------------------胡牌函数----------------------------------------
-local function getcolor(value)
-    return math.floor(value/0x10)
-end
-
-local function getvalue(value)
-    return value%0x10
-end
-
-local function SwitchToCardIndex(card)
-    return (getcolor(card) * 9 + getvalue(card))
-end
-
-local function SwitchToCardData(cardIndex)
-    return (math.floor((cardIndex - 1) / 9) * 16 + (cardIndex - 1) % 9 + 1)
-end
-
 function MJ_Algorithm:GetWeaveCard(eat, peng)
     local cardData = {}
     for i = 1, #eat do
@@ -1438,6 +1481,46 @@ function MJ_Algorithm:FindPossibleCard(cardlist, relyCardList)
             check[relyCardList[i]] = true
         end
     end
+
+    for i = 1, #cardlist do
+        if getcolor(cardlist[i]) <= 2 then
+            if not check[cardlist[i] - 1] and getvalue(cardlist[i]) ~= 1 then
+                table.insert(possible, (cardlist[i] - 1))
+                check[(cardlist[i] - 1)] = true
+            end
+            if not check[cardlist[i] + 1] and getvalue(cardlist[i]) ~= 9 then
+                table.insert(possible, (cardlist[i] + 1))
+                check[(cardlist[i] + 1)] = true
+            end
+            if not check[cardlist[i] - 2] and getvalue(cardlist[i]) > 2 then
+                table.insert(possible, (cardlist[i] - 2))
+                check[(cardlist[i] - 2)] = true
+            end
+            if not check[cardlist[i] + 2] and getvalue(cardlist[i]) < 8 then
+                table.insert(possible, (cardlist[i] + 2))
+                check[(cardlist[i] + 2)] = true
+            end
+            if not check[cardlist[i]] then
+                table.insert(possible, cardlist[i])
+                check[cardlist[i]] = true
+            end
+        else
+            if not check[cardlist[i]] then
+                table.insert(possible, cardlist[i])
+                check[cardlist[i]] = true
+            end
+        end
+    end
+    return possible
+end
+
+
+-- 给定牌组（缺一）和癞子数组，计算得出需要进行胡牌判断的牌
+function MJ_Algorithm:FindPossibleCardd(cardlist, relyCard)
+    local possible = {}
+    local check = {}
+    table.insert(possible,0x35)
+    check[0x35] = true
     for i = 1, #cardlist do
         if getcolor(cardlist[i]) <= 2 then
             if not check[cardlist[i] - 1] and getvalue(cardlist[i]) ~= 1 then
@@ -1502,12 +1585,8 @@ function MJ_Algorithm:EstimateTingHu(cardlist, relyCardList, fun_leftcard)
                             tinghumap[listtemp[i]] = {}
                             -- print("i", i)
                         end
-                        local cardnum
-                        if fun_leftcard then
-                            cardnum = fun_leftcard(possible[j])
-                        else
+                        local cardnum                
                             cardnum = 1
-                        end
                         local tingmap = {possible[j], cardnum}
                         table.insert(tinghumap[listtemp[i]], tingmap)
                     end
@@ -1571,11 +1650,19 @@ end
 ---------------------------------------小白龙部分---------------------------------------
 
 -- 给定牌组（满数量牌）、癞子数组和kindid，以kindid对应的特殊胡牌方式，判断是否能胡
-function MJ_Algorithm:HuPai_Special(cardlist, relyCardList, kindid)
+function MJ_Algorithm:HuPai_Special(cardlist, relylistf, kindid)
     if kindid == 110001 then
-        Delarray_Once(cardlist,relyCardList)
-
-        if  self:Thepairsd(cardlist,relyCardList) == true then 
+        local relylistf = {}
+        local cardk = DeepCopy(cardlist)
+        for i= 1,#cardk do
+            if cardk[i] == relyCard then
+                table.insert(relylistf,cardk[i])
+                Delarray(cardk,{cardk[i]})
+            end 
+        end 
+        local datacadlist = DeepCopy(cardlist)
+        Delarray_Once(datacadlist,relylistf)
+        if  self:Thepairsd(datacadlist,relylistf) == true then 
             return true 
         end 
     end
@@ -1584,14 +1671,22 @@ end
 
 
 -- 给定牌组（缺一）、癞子数组和kindid，以kindid对应的特殊胡牌方式，判断是否能胡任意牌
-function MJ_Algorithm:TingHuAllCard_Special(cardlist, relyCardList, kindid)
+function MJ_Algorithm:TingHuAllCard_Special(cardlist, relyCard, kindid)
     -- print(#cardlist,"七小对出牌七小对出牌七小对出牌七小对出牌七小对出牌七小对出牌")
     if kindid == 110001 then
-       
+        local relylistf = {}
+        local cardk = DeepCopy(cardlist)
+        for i= 1,#cardk do
+            if cardk[i] == relyCard then
+                table.insert(relylistf,cardk[i])
+                Delarray(cardk,{cardk[i]})
+            end 
+        end 
+        PrintTable(cardlist)
         local datacadlist = DeepCopy(cardlist)
-        Delarray(datacadlist,relyCardList)
-        print("进了七小对",#datacadlist,#relyCardList)
-        if  self:Thepairs(datacadlist,relyCardList) == true then 
+        Delarray(datacadlist,relylistf)
+        print("进了七小对",#datacadlist,#relylistf)
+        if  self:Thepairs(datacadlist,relylistf) == true then 
             print("七小对打印正确七小对打印正确七小对打印正确七小对打印正确七小对打印正确七小对打印正确七小对打印正确")
             return true 
         end 
@@ -1599,7 +1694,7 @@ function MJ_Algorithm:TingHuAllCard_Special(cardlist, relyCardList, kindid)
     return false 
 end
 
-function MJ_Algorithm:EstimateTingHu_XBL(cardlist, tinghumap, youjincard,relyCardList,shlecard,kindid)
+function MJ_Algorithm:EstimateTingHu_XBL(cardlist,tinghumap,youjincard,relycard,shlecard,kindid)
     local listtemp = DeepCopy(cardlist)
     if (#listtemp - 2) % 3 ~= 0 then
         return
@@ -1607,109 +1702,281 @@ function MJ_Algorithm:EstimateTingHu_XBL(cardlist, tinghumap, youjincard,relyCar
     local estimatetemp = DeepCopy(cardlist)
     local qitimatetemp = DeepCopy(cardlist)
     local hasestimatedout = {}
+    print(relycard,"赖子是多少")
+  
 
-    for i = 1, #listtemp do
-        if not hasestimatedout[listtemp[i]] then
-            -- print("listtemp, i", listtemp[i], i)
-            Delarray(estimatetemp, {listtemp[i]})
-            Delarray(qitimatetemp, {listtemp[i]})
-            hasestimatedout[listtemp[i]] = true
-            local tingspecial = self:TingHuAllCard_Special(qitimatetemp, relyCardList, kindid)
-            print(tingspecial,#cardlist,#relyCardList,"听任意牌")
-            if self:HuPai(estimatetemp, relyCardList) or tingspecial  then
-                --判断是否单吊，单吊即游金
-                local temp = DeepCopy(estimatetemp)
-                Delarray(temp, {0x35})
-                if (#temp % 3 == 0 and self:isAllThree(cardlist, relyCardList)) or tingspecial then
-                    print("hurenyipaild")
-                    table.insert(youjincard, listtemp[i])
-                else
-                    local possible = self:FindPossibleCard(estimatetemp, relyCardList)
-                    local qiduihu = self:qiduizhao(cardlist)
-                    -- PrintTable(possible)
-                    for j = 1, #possible do
-                        table.insert(estimatetemp, possible[j])
-                        if self:HuPai(estimatetemp, relyCardList) then
-                            if not tinghumap[listtemp[i]] then
-                                tinghumap[listtemp[i]] = {}
-                                -- print("i", i)
+    local hasestimatqi = {}
+    local qiduihu = DeepCopy(cardlist)
+    print(#tinghumap,#youjincard,"亭湖的拍的")
+    if #qiduihu == 14 then 
+        print(#qiduihu,"整七对的牌")
+        PrintTable(qiduihu)
+
+        for i = 1, #qiduihu do
+            if not hasestimatqi[qiduihu[i]] then
+                -- print("i, listtemp", i, listtemp[i])
+                print(#qitimatetemp,"进之前的",relyCard)
+                Delarray(qitimatetemp, {qiduihu[i]})
+                print(#qitimatetemp,"进之后的",relyCard)
+                hasestimatqi[qiduihu[i]] = true
+                local test = DeepCopy(qitimatetemp)
+                table.insert(test, 0x35)
+                print(#test,"七小对整体多少张牌",qiduihu[i])
+                if self:TingHuAllCard_Special(test, 0x35, kindid) then
+                    print("七对单掉七对单掉七对单掉七对单掉七对单掉七对单掉七对单掉七对单掉")
+                    --判断是否单吊，单吊即游金
+                    local temp = DeepCopy(qitimatetemp) --shisanzhang
+                    Delarray(temp, {0x35})
+                    if #temp % 2 == 0 and self:HuPai_Special(temp, relyCard, kindid) then   --找到最后多一个癞子 12张牌 
+                        print("12七对12七对12七对12七对12七对12七对12七对12七对")
+                        table.insert(youjincard, qitimatetemp[i])
+                    else
+                        local possible =self:qiduizhao(qitimatetemp) --十三张牌  
+                        print("不是胡任意牌")
+                        PrintTable(possible)
+                        for j = 1, #possible do
+                            table.insert(qitimatetemp, possible[j])
+                            if self:TingHuAllCard_Special(qitimatetemp, 0x35, kindid) then 
+                                if not tinghumap[qiduihu[i]] then
+                                    tinghumap[qiduihu[i]] = {}
+                                    -- print("i", i)
+                                end
+                                table.insert(tinghumap[qiduihu[i]], possible[j])
                             end
-                            local cardnum = self:findnotseenum(possible[j],shlecard)
-                            local tingmap = {possible[j], cardnum}
-                            table.insert(tinghumap[listtemp[i]], tingmap)
+                            table.remove(qitimatetemp, #qitimatetemp)
+                            print(#qitimatetemp,"多少张牌")
                         end
-                        table.remove(estimatetemp, #estimatetemp)
                     end
-                    if  kindid == 110001 then 
-                        PrintTable(qiduihu)
-                       
-                        
-                        for j =1, #qiduihu do
-                              local feinei = DeepCopy(qitimatetemp)
-                                table.insert(feinei,qiduihu[j])
-                                print("普通听七小对的牌",#feinei,#qiduihu)
-                                if  self:HuPai_Special(feinei, relyCardList, kindid)  then 
-                                     print("听七小对的牌正确的")
-                                    if not tinghumap[listtemp[i]] then
-                                        tinghumap[listtemp[i]] = {}
-                                    end
-                                    local cardnum
-                                    if fun_leftcard then
-                                        cardnum = self:findnotseenum(qiduihu[j],shlecard)            
-                                    else
-                                        cardnum = 1
-                                    end
-                                    local tingmap = {qiduihu[j], cardnum}
-                                    table.insert(tinghumap[listtemp[i]], tingmap)
-                                end 
-                               
-                        end 
-                    end 
                 end
-            else 
-                local qiduihu = self:qiduizhao(cardlist)
-                if  kindid == 110001  then 
-                    PrintTable(qiduihu)
-                    print(#qitimatetemp,#qiduihu)
-                    for j =1, #qiduihu do
-                            local feinei = DeepCopy(qitimatetemp)
-                            table.insert(feinei,qiduihu[j])
-                            print("普通听七小对的de牌",#feinei,#qiduihu)
-                            if  self:TingHuAllCard_Special(feinei, relyCardList, kindid)  then 
-                                 print("听七小对的de牌正确的")
-                                if not tinghumap[listtemp[i]] then
-                                    tinghumap[listtemp[i]] = {}
-                                end
-                                local cardnum
-                                if fun_leftcard then
-                                    cardnum = self:findnotseenum(qiduihu[j],shlecard)            
-                                else
-                                    cardnum = 1
-                                end
-                                local tingmap = {qiduihu[j], cardnum}
-                                table.insert(tinghumap[listtemp[i]], tingmap)
-                            end 
-                           
-                    end 
-                end 
-
-            end
-            table.insert(qitimatetemp,listtemp[i])
-            table.insert(estimatetemp, listtemp[i])
+                table.insert(qitimatetemp, qiduihu[i])
+            end 
         end
-    end
+
+    end 
     return
 end
 
+function MJ_Algorithm:EstimateCanHu_XBL(cardlist, relyCardList)
+    local time_in = os.clock()
+    local canhucard = {}
+    local listtemp = DeepCopy(cardlist)
+    local qilisttemp = DeepCopy(cardlist)
+    print(#listtemp,"能湖听人一排",#relyCardList)
+
+    if (#listtemp - 2) % 3 == 0 then
+        return {}
+    end
+   
+    if #qilisttemp == 13 then 
+        print(#qilisttemp,"七小对能湖听人一排",#relyCardList)
+        if self:TingHuAllCard_qi(qilisttemp, relyCardList,110001) then--十三章
+            -- 能胡任意牌则将0x66存入canhucard
+            print("tingrenyipaitingrenyipaitingrenyipaitingrenyipaitingrenyipai")
+            table.insert(canhucard, 0x66)
+        else
+            -- 不能胡任意牌，则判断能胡具体哪些牌
+            local possible = self:qiduizhao(qilisttemp, relyCardList)
+            for j = 1, #possible do
+                table.insert(qilisttemp, possible[j])
+                if self:TingHuAllCard_Special(qilisttemp, 0x35, 110001) then
+                    table.insert(canhucard, possible[j])
+                end
+                table.remove(qilisttemp, #qilisttemp)
+            end
+        end
+    end 
+    local time_out = os.clock()
+    print("EstimateTingHu, during time = ", time_out - time_in)
+    return canhucard
+end
+
+
+-- 给定牌组（缺一）、癞子数组和kindid，以kindid对应的特殊胡牌方式，判断是否能胡任意牌
+function MJ_Algorithm:TingHuAllCard_qi(cardlist, relyCardlf, kindid)
+    -- print(#cardlist,"七小对出牌七小对出牌七小对出牌七小对出牌七小对出牌七小对出牌")
+    if kindid == 110001 then
+        local datacadlist = DeepCopy(cardlist)
+        print("能湖进了七小对",#datacadlist,#relyCardlf)
+        if  self:Thepairscan(datacadlist,relyCardlf) == true then 
+            print("终于终于能湖进了七小对能湖进了终于终于七小对能湖进了七小终于终于对能终于终于湖进了七小对终于终于能湖进了七小对")
+            return true 
+        end 
+    end
+    return false 
+end
+
+
+function MJ_Algorithm:Thepairscan(card,tump)
+    if #card + #tump == 13 then 
+        local  list = DeepCopy(card)
+        local hu =  self:fun_Thepairs(list)
+        if #tump> #hu then
+            return true 
+        end
+    end
+    return false
+end
+
+
+function MJ_Algorithm:HuPaid(cardList, relyCard)
+    
+    local cardListTemp = DeepCopy(cardList)
+    local relyList = {}
+    for i = #cardListTemp, 1, -1 do
+        if cardListTemp[i] == relyCard then
+            table.insert(relyList, relyCard)
+            table.remove(cardListTemp, i)
+        end
+    end
+  
+   
+    
+   
+    if self:isDuiZi(cardListTemp, relyList) then
+        return true
+    end
+    table.sort(cardListTemp, function(a, b) return (a) < (b) end)
+    local separateList = self:SeparateCard(cardListTemp)
+ 
+    local listRemoveThree = {}
+
+    listRemoveThree[4] = self:RemoveFeng(DeepCopy(separateList[4]))
+    local index = {}
+    local temp = {}
+    for i = 1, 3 do
+        temp[i] = {}
+        if #separateList[i] > 0 then
+            table.insert(temp[i], 1)
+            table.insert(temp[i], 2)
+            if #separateList[i] >= 7 then
+                table.insert(temp[i], 3)
+                table.insert(temp[i], 4)
+                table.insert(temp[i], 5)
+            end
+        else
+            table.insert(temp[i], 0)
+        end
+    end
+
+    for i = 1, #temp[1] do
+        for j = 1, #temp[2] do
+            for k = 1, #temp[3] do
+                local indexTemp = {temp[1][i], temp[2][j], temp[3][k]}
+                table.insert(index, indexTemp)
+            end
+        end
+    end
+    local checkIndex = 1
+    while(true)
+    do
+    
+        -- PrintTableBy64_Debug(index[checkIndex])
+        for i = 1, 3 do
+            listRemoveThree[i] = self:RemoveThree(DeepCopy(separateList[i]), index[checkIndex][i])
+        end
+        local removeThreeTemp = self:CombineCard(listRemoveThree)
+        if self:isDuiZi(removeThreeTemp, relyList) then
+            return true
+        end
+        table.sort(removeThreeTemp, function(a, b) return (a) < (b) end)
+      
+    
+        for y = 1, 2 do
+            local relyTemp = DeepCopy(relyList)
+            local listRemoveRely = self:RemoveThreeWithRely(DeepCopy(removeThreeTemp), relyTemp, y)
+        
+            if self:isDuiZi(listRemoveRely, relyTemp) then
+                return true
+            end
+        end
+        if checkIndex == #index then
+            break
+        else
+            checkIndex = checkIndex + 1
+        end
+    end
+
+    
+
+    -- for i = 1, 3 do
+    --     local temp1 = self:Find456(separateList[i])
+    --     if #temp1 > 0 then
+    --         local newCardList = DeepCopy(cardList)
+    --         Delarray(newCardList, temp1)
+    --         print_debug("check 456, 456 card is")
+    --         PrintTableBy64_Debug(temp1)
+    --         print_debug("after remove 456, cardList is")
+    --         PrintTableBy64_Debug(newCardList)
+    --         if self:HuPai(newCardList, relyCard) then
+    --             return true
+    --         end
+    --     end
+    --     local temp2 = self:Find4Rely6(separateList[i], relyList)
+    --     if #temp2 > 0 then
+    --         local newCardList = DeepCopy(cardList)
+    --         table.insert(temp2, relyCard)
+    --         Delarray(newCardList, temp2)
+    --         print_debug("check 4rely6, 4rely6 card is")
+    --         PrintTableBy64_Debug(temp2)
+    --         print_debug("after remove 4rely6, cardList is")
+    --         PrintTableBy64_Debug(newCardList)
+    --         if self:HuPai(newCardList, relyCard) then
+    --             return true
+    --         end
+    --     end
+    -- end
+
+   
+
+    -- 先判断对子，暂时先去掉
+    local isCheck1 = {}
+    for i = 1, #cardList - 1 do
+        for j = i + 1, #cardList do
+            if not isCheck1[cardList[i]] and cardList[i] == cardList[j] and cardList[i] ~= relyCard then
+                isCheck1[cardList[i]] = true
+                local temp1 = DeepCopy(cardList)
+                Delarray(temp1, {cardList[i], cardList[j]})
+                
+            
+                -- PrintTableBy64_Debug(temp1)
+                if self:isAllThreed(temp1, relyCard) then
+                    return true
+                end
+            end
+        end
+    end
+
+    -- if #relyList > 0 then
+    --     local isCheck2 = {}
+    --     for i = 1, #cardList do
+    --         if not isCheck2[cardList[i]] and cardList[i] and cardList[i] ~= relyCard then
+    --             isCheck2[cardList[i]] = true
+    --             local temp1 = DeepCopy(cardList)
+    --             Delarray(temp1, {cardList[i], relyCard})
+    --             print_debug("check dui zi with rely, card is", cardList[i], relyCard)
+    --             print_debug("after remove dui zi, cardList is")
+    --             PrintTableBy64_Debug(temp1)
+    --             if self:isAllThree(temp1, relyCard) then
+    --                 return true
+    --             end
+    --         end
+    --     end
+    -- end
+
+    return false
+end
 
 function MJ_Algorithm:qiduizhao(cardlist)
-    local qiduihud = DeepCopy(cardlist)
+     local qiduihud = DeepCopy(cardlist)
+     table.sort(qiduihud, function ( a,b ) return( a < b) end )
     local houlaide = {}
+    
     for i =1, #cardlist do 
-        table.insert(houlaide,qiduihud[i])
-        Delarray(qiduihud,{cardlist[i]})
+        if qiduihud[i] ~= qiduihud[i+1] then 
+            table.insert(houlaide,qiduihud[i])
+        end 
     end 
-    table.insert(houlaide,0x35)
+    
     return houlaide
 end 
 
@@ -1754,7 +2021,7 @@ end
 
 
 function MJ_Algorithm:Thepairsd(card,tump)
-    if #card + #tump == 13 then 
+    if #card + #tump == 12 then 
         local  list = DeepCopy(card)
         local hu =  self:fun_Thepairs(list)
         if #hu == 0 then 
@@ -1787,8 +2054,120 @@ function MJ_Algorithm:Thepairs(card,tump)
     return false
 end
 
+function MJ_Algorithm:isAllThreed(cardList, relyCard)
+    -- print_debug("function MJ_Algorithm:isAllThree(cardList, relyCard)")
+    local cardListTemp = DeepCopy(cardList)
+    local relyList = {}
+    for i = #cardListTemp, 1, -1 do
+        if cardListTemp[i] == relyCard then
+            table.insert(relyList, relyCard)
+            table.remove(cardListTemp, i)
+        end
+    end
+    -- print_debug("cardListTemp is")
+    
+    -- print_debug("relyList is")
+   
+    if self:isDuiZi(cardListTemp, relyList) then
+        return true
+    end
+    table.sort(cardListTemp, function(a, b) return (a) < (b) end)
+    local separateList = self:SeparateCard(cardListTemp)
+    -- print_debug("separateList is")
+   
+
+    local listRemoveThree = {}
+    -- print_debug("before self:RemoveFeng(DeepCopy(separateList[4]))")
+    listRemoveThree[4] = self:RemoveFeng(DeepCopy(separateList[4]))
+    local index = {}
+    local temp = {}
+    for i = 1, 3 do
+        temp[i] = {}
+        if #separateList[i] > 0 then
+            table.insert(temp[i], 1)
+            table.insert(temp[i], 2)
+            if #separateList[i] >= 7 then
+                table.insert(temp[i], 3)
+                table.insert(temp[i], 4)
+                table.insert(temp[i], 5)
+            end
+        else
+            table.insert(temp[i], 0)
+        end
+    end
+
+    for i = 1, #temp[1] do
+        for j = 1, #temp[2] do
+            for k = 1, #temp[3] do
+                local indexTemp = {temp[1][i], temp[2][j], temp[3][k]}
+                table.insert(index, indexTemp)
+            end
+        end
+    end
+    local checkIndex = 1
+    while(true)
+    do
+        -- print_debug("index[checkIndex] is")
+        -- PrintTableBy64_Debug(index[checkIndex])
+        for i = 1, 3 do
+            listRemoveThree[i] = self:RemoveThree(DeepCopy(separateList[i]), index[checkIndex][i])
+        end
+        local removeThreeTemp = self:CombineCard(listRemoveThree)
+        if self:isThree(removeThreeTemp, relyList) then
+            return true
+        end
+        table.sort(removeThreeTemp, function(a, b) return (a) < (b) end)
+        -- print_debug("PrintTableBy64_Debug(removeThreeTemp) -- after remove three, before remove three with rely")
+        -- PrintTableBy64_Debug(removeThreeTemp)
+        for y = 1, 2 do
+            local relyTemp = DeepCopy(relyList)
+            local listRemoveRely = self:RemoveThreeWithRely(DeepCopy(removeThreeTemp), relyTemp, y)
+            -- print_debug("listRemoveRely -- after remove three with rely")
+            -- PrintTableBy64_Debug(listRemoveRely)
+            if self:isThree(listRemoveRely, relyTemp) then
+                return true
+            end
+        end
+        if checkIndex == #index then
+            break
+        else
+            checkIndex = checkIndex + 1
+        end
+    end
+
+    -- for i = 1, 3 do
+    --     local temp1 = self:Find456(separateList[i])
+    --     if #temp1 > 0 then
+    --         local newCardList = DeepCopy(cardList)
+    --         Delarray(newCardList, temp1)
+    --         print_debug("check 456, 456 card is")
+    --         PrintTableBy64_Debug(temp1)
+    --         print_debug("after remove 456, cardList is")
+    --         PrintTableBy64_Debug(newCardList)
+    --         if self:isAllThree(newCardList, relyCard) then
+    --             return true
+    --         end
+    --     end
+    --     local temp2 = self:Find4Rely6(separateList[i], relyList)
+    --     if #temp2 > 0 then
+    --         local newCardList = DeepCopy(cardList)
+    --         table.insert(temp2, relyCard)
+    --         Delarray(newCardList, temp2)
+    --         print_debug("check 4rely6, 4rely6 card is")
+    --         PrintTableBy64_Debug(temp2)
+    --         print_debug("after remove 4rely6, cardList is")
+    --         PrintTableBy64_Debug(newCardList)
+    --         if self:isAllThree(newCardList, relyCard) then
+    --             return true
+    --         end
+    --     end
+    -- end
+    return false
+end
+
 ---------------------------------------小白龙部分---------------------------------------
 
 ----------------------------------------胡牌函数----------------------------------------
 
 return MJ_Algorithm
+

@@ -1,5 +1,6 @@
 local mjalg = require("MJ_Algorithm")
 local mjtable = require("mjtable")
+local socket = require("socket")
 
 function PrintTable(tbl, level, filteDefault)
     local msg = ""
@@ -226,7 +227,9 @@ local Test = {
 
     -- 0x02, 0x02, 0x11, 0x11, 0x13, 0x13, 0x21, 0x21, 0x23, 0x23, 0x08, 0x08, 0x17
     -- 0x02, 0x02, 0x03, 0x03, 0x04, 0x04, 0x09, 0x15, 0x17, 0x24, 0x25, 0x27, 0x29, 0x37, 0x37, 0x37, 0x37
-    0x02, 0x02, 0x03, 0x03, 0x04, 0x04, 0x09, 0x15, 0x17, 0x24, 0x25, 0x27, 0x29, 0x37, 0x37, 0x37
+    -- 0x02, 0x02, 0x03, 0x03, 0x04, 0x04, 0x09, 0x15, 0x17, 0x24, 0x25, 0x27, 0x29, 0x37, 0x37, 0x37
+    -- 0x06, 0x07, 0x08, 0x08, 0x08, 0x08, 0x18, 0x19, 0x17, 0x26, 0x27, 0x28, 0x28, 0x29, 0x27, 0x35, 0x37
+    0x19,0x19,0x01,0x02,0x02,0x03,0x03,0x04,0x04,0x05,0x06,0x07,0x07,0x08,0x08,0x09,0x09
 
     -- 0x03, 0x12, 0x12, 0x13, 0x13, 0x14, 0x14, 0x14, 0x16, 0x17, 0x18, 0x19, 0x23, 0x24, 0x35, 0x35, 0x35, 
 }
@@ -280,19 +283,20 @@ print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@start@@@@@@@@@@@@@@@@@@@@@@@@@
 local time1 = os.clock()
 local isinit = mjtable.init()
 local time2 = os.clock()
--- local ishupai = mjtable.hupai(Test, 0x37)
+local ishupai = mjtable.hupai(Test, 0x19)
 -- -- 如下跑100W次用1.5秒
 -- local ishupai = 0
 -- for i = 1, 1000000 do
 --     ishupai = mjtable.hupai(huPaiTest_index, 33)
 -- end
--- local istinghu = mjtable.tinghu(Test, 0x37)
-local iscanhu = mjtable.canhu(Test, 0x37)
+-- local istinghu = mjtable.tinghu(Test, 0x00)
+-- local iscanhu = mjtable.canhu(Test, 0x46)
 local time3 = os.clock()
--- print("ishupai = ", ishupai)
+print("ishupai = ", ishupai)
 -- print("istinghu = ", istinghu)
+-- print("iscanhu = ", iscanhu)
 -- PrintTable(istinghu)
-PrintTable(iscanhu)
+-- PrintTable(iscanhu)
 print("during time = ", time2 - time1, time3 - time2)
 
 print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@end@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
@@ -317,7 +321,16 @@ local mj_cardAarry = {
 	0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,					-- 同子
 	0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,					-- 同子
 	0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,					-- 同子
-	0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,					-- 同子
+    0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29,					-- 同子
+    0x31, 0x31, 0x31, 0x31,												    -- 东风
+	0x32, 0x32, 0x32, 0x32,												    -- 西风
+	0x33, 0x33, 0x33, 0x33,												    -- 南风
+	0x34, 0x34, 0x34, 0x34,												    -- 北风
+	0x35, 0x35, 0x35, 0x35,												    -- 中
+	0x36, 0x36, 0x36, 0x36,												    -- 发
+	0x37, 0x37, 0x37, 0x37,												    -- 白
+	-- 0x41, 0x42, 0x43, 0x44,												    -- 春夏秋冬
+	-- 0x45, 0x46, 0x47, 0x48												    -- 梅兰菊竹
 }
 
 math.randomseed(tostring(os.time()):reverse():sub(1, 7))
@@ -325,7 +338,10 @@ math.randomseed(tostring(os.time()):reverse():sub(1, 7))
 local checkNum = 0
 local successNum = 0
 
-while(false)
+print("------------------------------------------------------------------------------------------------------")
+print("tring...")
+local maxWaveNum = 4
+while(true)
 do
     -- print("------------------------------------------------------------------------------------------------------")
     local test = {}
@@ -337,33 +353,42 @@ do
         cardNum[i + 0x10] = 0
         cardNum[i + 0x20] = 0
     end
-    local n = math.random(2, 5)
+    for i = 1, 7 do
+        cardNum[i + 0x30] = 0
+    end
+    -- for i = 1, 8 do
+    --     cardNum[i + 0x40] = 0
+    -- end
+    local n = math.random(0, maxWaveNum) --
+    -- local n = 5
     -- 随机n个吃
     local eat = 0
     while(eat < n)
     do
         index = math.random(1, #mj_cardAarry)
         card = mj_cardAarry[index]
-        if getvalue(card) <= 7 then
-            card = card
-        elseif getvalue(card) == 8 then
-            card = card - 1
-        elseif getvalue(card) == 9 then
-            card = card - 2
-        end
-        if cardNum[card] < 4 and cardNum[card + 1] < 4 and cardNum[card + 2] < 4 then
-            table.insert(test, card)
-            table.insert(test, card + 1)
-            table.insert(test, card + 2)
-            cardNum[card] = cardNum[card] + 1
-            cardNum[card + 1] = cardNum[card + 1] + 1
-            cardNum[card + 2] = cardNum[card + 2] + 1
-            eat = eat + 1
+        if getcolor(card) <= 2 then
+            if getvalue(card) <= 7 then
+                card = card
+            elseif getvalue(card) == 8 then
+                card = card - 1
+            elseif getvalue(card) == 9 then
+                card = card - 2
+            end
+            if cardNum[card] < 4 and cardNum[card + 1] < 4 and cardNum[card + 2] < 4 then
+                table.insert(test, card)
+                table.insert(test, card + 1)
+                table.insert(test, card + 2)
+                cardNum[card] = cardNum[card] + 1
+                cardNum[card + 1] = cardNum[card + 1] + 1
+                cardNum[card + 2] = cardNum[card + 2] + 1
+                eat = eat + 1
+            end
         end
     end
     -- 随机5 - n个碰
     local peng = 0
-    while(peng < (5 - n))
+    while(peng < (maxWaveNum - n))
     do
         index = math.random(1, #mj_cardAarry)
         card = mj_cardAarry[index]
@@ -389,31 +414,45 @@ do
     end
     -- 随机m个牌是癞子
     local m = math.random(0, 4)
-    for i = 1, m do
-        index = math.random(1, #test)
-        test[index] = 0x35
+    -- local m = 2
+    local relyNum = m - cardNum[0x35]
+    if relyNum > 0 then
+        for i = 1, relyNum do
+            index = math.random(1, #test)
+            if test[index] ~= 0x35 then
+                test[index] = 0x35
+            end
+        end
     end
     -- PrintTableBy64(test)
+    -- print("eat = "..eat..", peng = " .. peng .. ", laizi = " .. m)
 
     local ishu
     -- 判断是否能胡
     -- ishu = mjalg:HuPai(test, {0x35})
-    ishu = mjtable.hupai(test, 0x37)
+    ishu = mjtable.hupai(test, 0x35)
     -- ishu = mjalg:AnalyseCardWithoutItem(test, 0x35)
     -- ishu = mjalg:HuPai_DuiZi(test, 0x35)
     -- ishu = mjalg:isAllThree(test, 0x35)
     -- 不能胡，返回不能胡的牌型
-    if not ishu then
+    if not ishu or ishu == 0 then
         print("mei hu!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         print("cardlist is")
         table.sort(test, function(a, b) return (a) < (b) end)
         PrintTableBy64(test)
         print("mei hu!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("failureNum, successNum, checkNum, sucess probability =",checkNum - successNum, successNum, checkNum, successNum / checkNum)
         -- break
     else
         successNum = successNum + 1
     end
     checkNum = checkNum + 1
-    print("failureNum, successNum, checkNum, sucess probability =",checkNum - successNum, successNum, checkNum, successNum / checkNum)
+    -- print("cardlist is")
+    -- table.sort(test, function(a, b) return (a) < (b) end)
+    -- PrintTableBy64(test)
+    if checkNum % 10000 == 0 then
+        print("failureNum, successNum, checkNum, sucess probability =",checkNum - successNum, successNum, checkNum, successNum / checkNum)
+    end
     -- print("------------------------------------------------------------------------------------------------------")
+    -- socket.sleep(0.001)
 end

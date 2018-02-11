@@ -1,6 +1,8 @@
 //编译成so文件命令
 //g++ mjtable.cpp -fPIC -std=c++11 -shared -o mjtable.so
 
+//注意，若传入的card <= 0 或 card >= 0x45则会由于数组越界而崩溃，已加判断
+
 extern "C"
 {
 #include <stdio.h>
@@ -24,369 +26,302 @@ extern "C"
 #define DWORD 						unsigned long
 #define max(a,b)            (((a) > (b)) ? (a) : (b))
 
+//麻将颜色（种类）定义
+enum enColorMJ
+{
+	enColorMJ_WAN = 0,  //万
+	enColorMJ_TONG,     //筒
+	enColorMJ_TIAO,     //条
+	enColorMJ_FenZi,    //风、字 牌
+	enColorMJ_Max,
+};
+
+#define MAX_TOTAL_TYPE					34
+#define MAX_VAL_NUM						9
+#define MAX_KEY_NUM						(MAX_VAL_NUM+1)		//9+赖子
+#define MAX_NAI_NUM						4					//赖子最大个数
+#define BIT_VAL_NUM						3					//一个值占的bit数
+#define BIT_VAL_FLAG					0x07				//取一个3bit值
+
 using namespace std;
 
-namespace ArrayMJ
+// 根据给定手牌索引的数组（index），求位操作之后的对应的唯一数（key）的值，在这个数中，有0~9+癞子共10个数，每个数用key中的3位表示，所以总共30位
+inline int getKeyByIndex(BYTE byIndex[MAX_KEY_NUM], BYTE byNum = MAX_KEY_NUM)
 {
-#define MAX_TOTAL_TYPE				34
-#define MAX_VAL_NUM					9
-#define MAX_KEY_NUM					(MAX_VAL_NUM+1)		//9+赖子
-#define MAX_NAI_NUM					4				    //赖子最大个数
-#define BIT_VAL_NUM					3				    //一个值占的bit数
-#define BIT_VAL_FLAG				0x07				//
+	int nKey = 0;
+	for (int i = 0; i < byNum; ++i)
+		nKey |= (int)(byIndex[i] & BIT_VAL_FLAG) << (BIT_VAL_NUM*i);
+	return nKey;
+}
 
-	//麻将颜色（种类）定义
-	enum enColorMJ
+// 根据llVal，反向推理得出对应的手牌索引，并判断是否是无效手牌（单牌个数超过4或总牌数超过17）
+inline bool isValidKey(int llVal)
+{
+	BYTE byIndex[MAX_KEY_NUM] = {};
+	for (int i = 0; i < MAX_KEY_NUM; ++i)
+		byIndex[i] = (llVal >> (BIT_VAL_NUM*i))&BIT_VAL_FLAG;
+
+	if (byIndex[9] > MAX_NAI_NUM)	return false;
+	int nNum = 0;
+	for (int i = 0; i < MAX_KEY_NUM; ++i)
 	{
-		enColorMJ_WAN = 0,  //万
-		enColorMJ_TONG,     //筒
-		enColorMJ_TIAO,     //条
-		enColorMJ_FenZi,    //风、字 牌
-		enColorMJ_Max,
-	};
-
-	set<int>							g_setSingle;		//单个顺子+刻子		50个
-	set<int>							g_setSingleFZ;		//单个顺子+刻子		22个
-	set<int>							g_setSingleJiang;	//单个将			19个
-	set<int>							g_setSingleJiangFZ;	//单个将			15个
-
-	BYTE								g_byArray[262144];
-	BYTE								g_byArrayFZ[262144];
-	BYTE								g_byError[262144];
-
-	unordered_map<int, BYTE>			g_mapHuAll[15];
-	unordered_map<int, BYTE>			g_mapHuAllFZ[15];
-
-	inline int getKeyByIndex(BYTE byIndex[MAX_KEY_NUM], BYTE byNum = MAX_KEY_NUM)
-	{
-		int nKey = 0;
-		for (int i = 0; i < byNum; ++i)
-			nKey |= (int)(byIndex[i] & BIT_VAL_FLAG) << (BIT_VAL_NUM*i);
-		return nKey;
+		nNum += byIndex[i];
+		if (byIndex[i] > 4 || nNum > 17)	//
+			return false;
 	}
-	inline int getArrayIndex(BYTE byIndex[MAX_VAL_NUM], BYTE byNum = MAX_VAL_NUM)
+	return nNum > 0;
+}
+
+// 根据位操作之后的对应的唯一数（key）的值，反向推导得出给定手牌索引的数组。返回nNum即为手牌的总牌数
+inline BYTE getNumByKey(int llVal, BYTE byNum = MAX_KEY_NUM)
+{
+	BYTE byIndex[MAX_KEY_NUM] = {};
+	for (int i = 0; i < MAX_KEY_NUM; ++i)
+		byIndex[i] = (llVal >> (BIT_VAL_NUM*i))&BIT_VAL_FLAG;
+
+	BYTE nNum = 0;
+	for (int i = 0; i < byNum; ++i)
+		nNum += byIndex[i];
+	return nNum;
+}
+
+// 给定llVal，把它转换成nNum、val和byNum，再存到map里，nNum指llVal对应的手牌的总牌数，byNum指llVal对应的癞子的数目，val是把llVal的癞子部分的内容去掉
+inline void addMap(unordered_map<int, BYTE> mapTemp[], int llVal)
+{
+	BYTE nNum = getNumByKey(llVal, MAX_VAL_NUM);
+	BYTE byNum = (llVal >> (BIT_VAL_NUM * 9))&BIT_VAL_FLAG;
+	int  val = (llVal & 0x7FFFFFF);
+	unordered_map<int, BYTE>::iterator iter = mapTemp[nNum].find(val);
+	if (iter != mapTemp[nNum].end())
+		iter->second = min(byNum, iter->second);	// 这段意思是有多余的癞子，取少的。比如3个癞子+一个顺子，和同样的一个顺子，val一样，可以取无癞子的
+	else
+		mapTemp[nNum][val] = byNum;
+}
+
+
+set<int>					g_setSingle;		//单个顺子+刻子		50个
+set<int>					g_setSingleFZ;		//单个顺子+刻子		22个
+set<int>					g_setSingleJiang;	//单个将			19个
+set<int>					g_setSingleJiangFZ;	//单个将			15个
+
+unordered_map<int, BYTE>			g_mapHuAll[18];		// 数组下标表示手牌数量，key表示手牌索引经过位运算转换成的牌值（去掉癞子部分），value表示癞子数目
+unordered_map<int, BYTE>			g_mapHuAllFZ[18];	// 数组下标表示手牌数量，key表示手牌索引经过位运算转换成的牌值（去掉癞子部分），value表示癞子数目
+
+class CHuPaiMJ
+{
+private:
+	// 生成单个组合（三张），利用位转换成key，放入unordered_map里
+	static void TrainSingle()
 	{
-		int nKey = 0;
-		for (int i = 0; i < byNum; ++i)
-		{
-			if ((byIndex[i] & BIT_VAL_FLAG) > 3) byIndex[i] -= 3;
-			nKey |= (int)(byIndex[i] & 0x03) << (2 * i);
-		}
-		return nKey;
-	}
-	inline int getArrayIndex(int llVal)
-	{
-		BYTE byIndex[MAX_VAL_NUM] = {};
+		// YP：最后一个是癞子，即三个癞子
+		BYTE byTemp[MAX_KEY_NUM] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 3 };
+		g_setSingle.insert(getKeyByIndex(byTemp));
+		g_setSingleFZ.insert(getKeyByIndex(byTemp));
+		// 1.1 刻子，生成3个一样单张、2个一样单张+1癞子、1个单张+2癞子
 		for (int i = 0; i < MAX_VAL_NUM; ++i)
-			byIndex[i] = (llVal >> (BIT_VAL_NUM*i))&BIT_VAL_FLAG;
-
-		return getArrayIndex(byIndex);
-	}
-	inline bool isValidKey(int llVal)
-	{
-		BYTE byIndex[MAX_KEY_NUM] = {};
-		for (int i = 0; i < MAX_KEY_NUM; ++i)
-			byIndex[i] = (llVal >> (BIT_VAL_NUM*i))&BIT_VAL_FLAG;
-
-		if (byIndex[9] > MAX_NAI_NUM)	return false;
-		int nNum = 0;
-		for (int i = 0; i < MAX_KEY_NUM; ++i)
 		{
-			nNum += byIndex[i];
-			if (byIndex[i] > 4 || nNum > 14)	//
-				return false;
-		}
-		return nNum > 0;
-	}
-	inline BYTE getNumByKey(int llVal, BYTE byNum = MAX_KEY_NUM)
-	{
-		BYTE byIndex[MAX_KEY_NUM] = {};
-		for (int i = 0; i < MAX_KEY_NUM; ++i)
-			byIndex[i] = (llVal >> (BIT_VAL_NUM*i))&BIT_VAL_FLAG;
-
-		BYTE nNum = 0;
-		for (int i = 0; i < byNum; ++i)
-			nNum += byIndex[i];
-		return nNum;
-	}
-	inline void addMap(unordered_map<int, BYTE> mapTemp[], int llVal)
-	{
-		BYTE nNum = getNumByKey(llVal, MAX_VAL_NUM);
-		BYTE byNum = (llVal >> (BIT_VAL_NUM * 9))&BIT_VAL_FLAG;
-		int  val = (llVal & 0x7FFFFFF);
-		unordered_map<int, BYTE>::iterator iter = mapTemp[nNum].find(val);
-		if (iter != mapTemp[nNum].end())
-			iter->second = min(byNum, iter->second);
-		else
-			mapTemp[nNum][val] = byNum;
-	}
-
-	class CHuPaiArrayMJ
-	{
-	private:
-		static void TrainSingle()
-		{
-			BYTE byTemp[MAX_KEY_NUM] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 3 };
-			g_setSingle.insert(getKeyByIndex(byTemp));
-			g_setSingleFZ.insert(getKeyByIndex(byTemp));
-			// 1.1 刻子
-			for (int i = 0; i < MAX_VAL_NUM; ++i)
+			memset(byTemp, 0, MAX_KEY_NUM);
+			for (int n = 0; n < 3; ++n)
 			{
-				memset(byTemp, 0, MAX_KEY_NUM);
-				for (int n = 0; n < 3; ++n)
-				{
-					byTemp[i] = 3 - n;	byTemp[9] = n;
-					g_setSingle.insert(getKeyByIndex(byTemp));
-					if (i < 7)	//风、字牌最多7张
-						g_setSingleFZ.insert(getKeyByIndex(byTemp));
-				}
+				byTemp[i] = 3 - n;	byTemp[9] = n;
+				g_setSingle.insert(getKeyByIndex(byTemp));
+				if (i < 7)	//风、字牌最多7张
+					g_setSingleFZ.insert(getKeyByIndex(byTemp));
 			}
-			// 1.2 顺子 没赖子
-			for (int i = 0; i < MAX_VAL_NUM - 2; ++i)
+		}
+		// 1.2 顺子 没赖子，生成3个连续单张
+		for (int i = 0; i < MAX_VAL_NUM - 2; ++i)
+		{
+			memset(byTemp, 0, MAX_KEY_NUM);
+			byTemp[i] = 1;	byTemp[i + 1] = 1;	byTemp[i + 2] = 1;
+			g_setSingle.insert(getKeyByIndex(byTemp));
+		}
+		// 1.3 顺子 1个赖子 (2个赖子时也就是刻子)，生成能构成顺子的（2个单张+1个癞子）
+		for (int i = 0; i < MAX_VAL_NUM - 2; ++i)
+		{
+			for (int n = 0; n < 3; ++n)
 			{
 				memset(byTemp, 0, MAX_KEY_NUM);
 				byTemp[i] = 1;	byTemp[i + 1] = 1;	byTemp[i + 2] = 1;
+				byTemp[i + n] = 0;	byTemp[9] = 1;
 				g_setSingle.insert(getKeyByIndex(byTemp));
 			}
-			// 1.3 顺子 1个赖子 (2个赖子时也就是刻子)
-			for (int i = 0; i < MAX_VAL_NUM - 2; ++i)
-			{
-				for (int n = 0; n < 3; ++n)
-				{
-					memset(byTemp, 0, MAX_KEY_NUM);
-					byTemp[i] = 1;	byTemp[i + 1] = 1;	byTemp[i + 2] = 1;
-					byTemp[i + n] = 0;	byTemp[9] = 1;
-					g_setSingle.insert(getKeyByIndex(byTemp));
-				}
-			}
-			// 2.1 将牌
-			memset(byTemp, 0, MAX_KEY_NUM);
-			byTemp[9] = 2;
-			g_setSingleJiang.insert(getKeyByIndex(byTemp));
-			g_setSingleJiangFZ.insert(getKeyByIndex(byTemp));
-			for (int i = 0; i < MAX_VAL_NUM; ++i)
-			{
-				memset(byTemp, 0, MAX_KEY_NUM);
-				for (int n = 0; n < 2; ++n)
-				{
-					byTemp[i] = 2 - n;	byTemp[9] = n;
-					g_setSingleJiang.insert(getKeyByIndex(byTemp));
-					if (i < 7)	//风、字牌最多7张
-						g_setSingleJiangFZ.insert(getKeyByIndex(byTemp));
-				}
-			}
-		};
-
-		static void TrainAllComb(const set<int> &setSingle, unordered_map<int, BYTE> mapOut[])
+		}
+		// 2.1 将牌，生成能构成将牌的（2个癞子、2个单张、1个单张+1个癞子）
+		memset(byTemp, 0, MAX_KEY_NUM);
+		byTemp[9] = 2;
+		g_setSingleJiang.insert(getKeyByIndex(byTemp));
+		g_setSingleJiangFZ.insert(getKeyByIndex(byTemp));
+		for (int i = 0; i < MAX_VAL_NUM; ++i)
 		{
-			int nAll = 0;
-			int nSingle[100] = {};
-			set<int>::iterator iter = setSingle.begin();
-			for (; iter != setSingle.end(); ++iter)
-				nSingle[nAll++] = *iter;
-
-			for (int i1 = 0; i1 < nAll; ++i1)
+			memset(byTemp, 0, MAX_KEY_NUM);
+			for (int n = 0; n < 2; ++n)
 			{
-				addMap(mapOut, nSingle[i1]);
-				for (int i2 = i1; i2 < nAll; ++i2)
+				byTemp[i] = 2 - n;	byTemp[9] = n;
+				g_setSingleJiang.insert(getKeyByIndex(byTemp));
+				if (i < 7)	//风、字牌最多7张
+					g_setSingleJiangFZ.insert(getKeyByIndex(byTemp));
+			}
+		}
+	};
+
+	// 把所有setSingle（全三）加起来，加成五组（兼容14、17张牌），判断是否有效，再放入mapOut里
+	static void TrainAllComb(const set<int> &setSingle, unordered_map<int, BYTE> mapOut[])
+	{
+		int nAll = 0;
+		int nSingle[100] = {};
+		set<int>::iterator iter = setSingle.begin();
+		for (; iter != setSingle.end(); ++iter)
+			nSingle[nAll++] = *iter;
+
+		for (int i1 = 0; i1 < nAll; ++i1)
+		{
+			addMap(mapOut, nSingle[i1]);
+			for (int i2 = i1; i2 < nAll; ++i2)
+			{
+				int nTemp = nSingle[i1] + nSingle[i2];
+				if (!isValidKey(nTemp))	continue;
+				addMap(mapOut, nTemp);
+				for (int i3 = i2; i3 < nAll; ++i3)
 				{
-					int nTemp = nSingle[i1] + nSingle[i2];
+					int nTemp = nSingle[i1] + nSingle[i2] + nSingle[i3];
 					if (!isValidKey(nTemp))	continue;
 					addMap(mapOut, nTemp);
-					for (int i3 = i2; i3 < nAll; ++i3)
+					for (int i4 = i3; i4 < nAll; ++i4)
 					{
-						int nTemp = nSingle[i1] + nSingle[i2] + nSingle[i3];
+						int nTemp = nSingle[i1] + nSingle[i2] + nSingle[i3] + nSingle[i4];
 						if (!isValidKey(nTemp))	continue;
 						addMap(mapOut, nTemp);
-						for (int i4 = i3; i4 < nAll; ++i4)
+						for (int i5 = i4; i5 < nAll; ++i5)
 						{
-							int nTemp = nSingle[i1] + nSingle[i2] + nSingle[i3] + nSingle[i4];
+							int nTemp = nSingle[i1] + nSingle[i2] + nSingle[i3] + nSingle[i4] + nSingle[i5];
 							if (!isValidKey(nTemp))	continue;
-							addMap(mapOut, nTemp);
+      							addMap(mapOut, nTemp);
 						}
 					}
 				}
 			}
 		}
+	}
 
-		static void TrainAllComb_Jiang(const set<int> &setSingle, unordered_map<int, BYTE> mapOut[])
+	// 
+	static void TrainAllComb_Jiang(const set<int> &setSingle, unordered_map<int, BYTE> mapOut[])
+	{
+		int nAll = 0;
+		int nSingle[100] = {};
+
+		set<int>::iterator iter = setSingle.begin();
+		for (; iter != setSingle.end(); ++iter)
+			nSingle[nAll++] = *iter;
+
+		unordered_map<int, BYTE> mapTemp[18];
+		for (int j = 0; j < 18; ++j)
+			mapTemp[j] = mapOut[j];
+
+		for (int i = 0; i < nAll; ++i)
 		{
-			int nAll = 0;
-			int nSingle[100] = {};
-
-			set<int>::iterator iter = setSingle.begin();
-			for (; iter != setSingle.end(); ++iter)
-				nSingle[nAll++] = *iter;
-
-			unordered_map<int, BYTE> mapTemp[15];
-			for (int j = 0; j < 15; ++j)
-				mapTemp[j] = mapOut[j];
-
-			for (int i = 0; i < nAll; ++i)
+			for (int j = 0; j < 18; ++j)
 			{
-				for (int j = 0; j < 15; ++j)
+				addMap(mapOut, nSingle[i]);
+				unordered_map<int, BYTE>::iterator iter_u = mapTemp[j].begin();
+				for (; iter_u != mapTemp[j].end(); ++iter_u)
 				{
-					addMap(mapOut, nSingle[i]);
-					unordered_map<int, BYTE>::iterator iter_u = mapTemp[j].begin();
-					for (; iter_u != mapTemp[j].end(); ++iter_u)
-					{
-						int nTemp = nSingle[i] + iter_u->first + (int(iter_u->second & BIT_VAL_FLAG) << 27);
-						if (isValidKey(nTemp))
-							addMap(mapOut, nTemp);
-					}
+					int nTemp = nSingle[i] + iter_u->first + (int(iter_u->second & BIT_VAL_FLAG) << 27);	// 左移27是为了转换成癞子那一位
+					if (isValidKey(nTemp))
+						addMap(mapOut, nTemp);
 				}
 			}
 		}
+	}
 
-	public:
-		static void TrainAll()
+	// 判断某道是否能满足胡（全三或全三+将）
+	static bool CheckCanHuSingle(BYTE byType, BYTE byCards[], BYTE &byNaiNum, BYTE byNaiMax)
+	{
+		bool bSuc = false;
+		int	 nVal = getKeyByIndex(byCards, MAX_VAL_NUM);
+		if (byType == enColorMJ_FenZi)
+			nVal &= 0x1FFFFF;		// 风字牌则只需要前面7位
+
+		BYTE nNum = getNumByKey(nVal, MAX_VAL_NUM);
+		if (byType == enColorMJ_FenZi)
 		{
-			if (g_setSingle.empty())
+			unordered_map<int, BYTE>::iterator iterFind = g_mapHuAllFZ[nNum].find(nVal);
+			if (iterFind != g_mapHuAllFZ[nNum].end())
 			{
-				memset(g_byArray, 0, sizeof(g_byArray));
-				memset(g_byArrayFZ, 0, sizeof(g_byArrayFZ));
-				memset(g_byError, 0, sizeof(g_byError));
-
-				// DWORD dwFlag = GetTickCount();
-				TrainSingle();
-				TrainAllComb(g_setSingle, g_mapHuAll);
-				TrainAllComb(g_setSingleFZ, g_mapHuAllFZ);
-				TrainAllComb_Jiang(g_setSingleJiang, g_mapHuAll);
-				TrainAllComb_Jiang(g_setSingleJiangFZ, g_mapHuAllFZ);
-
-				int numAll = 0;
-				for (int i = 0; i < 15; ++i)
-				{
-					numAll += g_mapHuAll[i].size();
-					numAll += g_mapHuAllFZ[i].size();
-				}
-				// cout << "train cost:" << GetTickCount() - dwFlag << "ms numAll=" << numAll << endl;
-				for (int i = 0; i < 15; ++i)
-				{
-					unordered_map<int, BYTE>::iterator iter = g_mapHuAll[i].begin();
-					for (; iter != g_mapHuAll[i].end(); ++iter)
-					{
-						int nArrayIndex = getArrayIndex(iter->first);
-						ArrayMJ::g_byArray[nArrayIndex] = max(ArrayMJ::g_byArray[nArrayIndex], iter->second + 1);
-					}
-					iter = g_mapHuAllFZ[i].begin();
-					for (; iter != g_mapHuAllFZ[i].end(); ++iter)
-					{
-						int nArrayIndex = getArrayIndex(iter->first);
-						ArrayMJ::g_byArrayFZ[nArrayIndex] = max(ArrayMJ::g_byArrayFZ[nArrayIndex], iter->second + 1);
-					}
-					g_mapHuAllFZ[i].clear();
-				}
-
-				for (int n = 0; n < sizeof(g_byArray); ++n)
-				{
-					int nNum = 0;
-					BYTE byIndex[MAX_VAL_NUM] = {};
-					for (int i = 0; i < MAX_VAL_NUM; ++i)
-					{
-						byIndex[i] = (n >> (2 * i)) & 0x03;
-						nNum += byIndex[i];
-					}
-					if (nNum >= 15) continue;
-
-					int nVal = getKeyByIndex(byIndex, MAX_VAL_NUM);
-					unordered_map<int, BYTE>::iterator iter = g_mapHuAll[nNum].find(nVal);
-					if (iter == g_mapHuAll[nNum].end())
-						g_byError[n] = 1;
-				}
-				for (int i = 0; i < 15; ++i)
-					g_mapHuAll[i].clear();
-
-				/*
-				// just show info
-				int nZero = 0, nZeroFZ = 0, nError = 0, nAll = 0;
-				for (int i = 0; i < sizeof(g_byArray); ++i)
-				{
-				int nNum = 0;
-				BYTE byIndex[MAX_VAL_NUM] = {};
-				for (int n = 0; n < MAX_VAL_NUM; ++n)
-				{
-				byIndex[n] = (i >> (2 * n)) & 0x03;
-				nNum += byIndex[n];
-				}
-				if (nNum >= 15) continue;
-
-				++nAll;
-				if (g_byArray[i] == 0) ++nZero;
-				if (g_byArrayFZ[i] == 0) ++nZeroFZ;
-				if (g_byError[i] == 0) ++nError;
-				}
-				cout << "nAll = " << nAll << endl;
-				cout << "nZero = " << nAll - nZero << " / " << nZero << endl;
-				cout << "nZeroFZ = " << nAll - nZeroFZ << " / " << nZeroFZ << endl;
-				cout << "nError = " << nAll - nError << " / " << nError << endl;
-				//*/
+				byNaiNum = iterFind->second;	// 返回该组合需要的癞子数
+				if (iterFind->second <= byNaiMax)	// 若该组合需要的癞子数少于传入的癞子数（剩下的癞子数），则返回false
+					return true;
 			}
-			else
-				cout << "already trained!" << endl;
+		}
+		else
+		{
+			unordered_map<int, BYTE>::iterator iterFind = g_mapHuAll[nNum].find(nVal);
+			if (iterFind != g_mapHuAll[nNum].end())
+			{
+				byNaiNum = iterFind->second;
+				if (iterFind->second <= byNaiMax)
+					return true;
+			}
+		}
+		byNaiNum = 0;
+		return false;
+	}
+
+public:
+	static void TrainAll()
+	{
+		if (g_setSingle.empty())
+		{
+			TrainSingle();
+			TrainAllComb(g_setSingle, g_mapHuAll);
+			TrainAllComb(g_setSingleFZ, g_mapHuAllFZ);
+			TrainAllComb_Jiang(g_setSingleJiang, g_mapHuAll);
+			TrainAllComb_Jiang(g_setSingleJiangFZ, g_mapHuAllFZ);
+		}
+		else
+			printf("already trained!\n");
+	}
+
+	static bool CheckCanHu(BYTE byCardSrc[], BYTE byNaiIndex)
+	{
+		if (g_setSingle.empty())
+			TrainAll();
+
+		BYTE byCards[MAX_TOTAL_TYPE];
+		memcpy(byCards, byCardSrc, MAX_TOTAL_TYPE);
+		int nNaiZiNum = 0;
+		if (byNaiIndex < MAX_TOTAL_TYPE)
+		{
+			nNaiZiNum = byCards[byNaiIndex];
+			byCards[byNaiIndex] = 0;
 		}
 
-		static bool CheckCanHu(BYTE byCardSrc[], BYTE byNaiIndex)
+		BYTE byJiangNum = 0;
+		BYTE nNaiTry[enColorMJ_Max] = {};	// 每道需要的癞子的数目
+		for (int cor = 0; cor < enColorMJ_Max; ++cor)
 		{
-			BYTE byCards[MAX_TOTAL_TYPE];
-			memcpy(byCards, byCardSrc, MAX_TOTAL_TYPE);
-			int nNaiZiNum = 0;
-			if (byNaiIndex < MAX_TOTAL_TYPE)
-			{
-				nNaiZiNum = byCards[byNaiIndex];
-				byCards[byNaiIndex] = 0;
-			}
+			int nMax = (cor == enColorMJ_FenZi) ? 7 : 9;
+			int nCardAll = 0;
+			for (int i = 0; i < nMax; ++i)
+				nCardAll += byCards[9 * cor + i];
 
-			BYTE byJiangNum = 0;
-			BYTE nNaiTry;
-			for (int cor = 0; cor < enColorMJ_Max; ++cor)
-			{
-				int nMax = (cor == enColorMJ_FenZi) ? 7 : 9;
-				int nVal = 0, nNum = 0;
-				BYTE byDelIndex = 0xFF, byTemp = 0;
-				for (int i = 0; i < nMax; ++i)
-				{
-					byTemp = byCards[9 * cor + i];
-					nNum += byTemp;
-					if (byTemp > 3)
-					{
-						byDelIndex = i;
-						nVal |= (int)(byTemp - 3) << (2 * i);
-					}
-					else
-						nVal |= (int)(byTemp) << (2 * i);
-				}
+			if (nCardAll == 0) continue;
+			if (!CheckCanHuSingle(cor, byCards + 9 * cor, nNaiTry[cor], nNaiZiNum))
+				return false;	// 有一道不满足则不能胡
 
-				if (nNum == 0) continue;
-
-				if (g_byError[nVal]) return false;
-
-				nNaiTry = (cor == enColorMJ_FenZi) ? g_byArrayFZ[nVal] - 1 : g_byArray[nVal] - 1;
-				if (nNaiTry != 0xFF)
-					byJiangNum += ((nNum + nNaiTry) % 3 == 2);
-
-				if (nNaiTry == 0xFF || nNaiZiNum < nNaiTry || byJiangNum + nNaiTry > nNaiZiNum + 1)
-				{
-					if (byDelIndex != 0xFF)
-					{
-						byCards[9 * cor + byDelIndex] -= 2;
-						--cor; ++byJiangNum;
-						continue;
-					}
-					return false;
-				}
-				nNaiZiNum -= nNaiTry;
-			}
-			return byJiangNum > 0 || nNaiZiNum >= 2;
+			nNaiZiNum -= nNaiTry[cor];
+			byJiangNum += ((nCardAll + nNaiTry[cor]) % 3 == 2);		// 若nCardAll + nNaiTry[cor]除3的余数等于2，则返回1，否则返回0
+			if (byJiangNum > nNaiZiNum + 1)		// 2将至少需要1癞，1将至少需要0癞，不符合则return false
+				return false;
 		}
-	};
-}
+		return byJiangNum > 0 || nNaiZiNum >= 2;	// byJiangNum为将的数量，nNaiZiNum为剩下的癞子数
+	}
+};
 
 #define	MASK_COLOR					0xF0			    //花色掩码
 #define	MASK_VALUE					0x0F			    //数值掩码
 
-static BYTE g_HuCardAll[136];
-ArrayMJ::CHuPaiArrayMJ stArray;
+CHuPaiMJ stTssss;
 
 //扑克转换---转换实际的牌值数据
 static BYTE SwitchToCardData(BYTE cbCardIndex)
@@ -402,7 +337,7 @@ static BYTE SwitchToCardIndex(BYTE cbCardData)
 
 static int l_init(lua_State *L)
 {
-	stArray.TrainAll();
+	stTssss.TrainAll();
     // printf("Finish TrainAll()\n");
 	lua_pushnumber(L, 1);  /* push result */
     /* 这里可以看出，C可以返回给Lua多个结果，
@@ -418,13 +353,17 @@ static int l_hupai(lua_State *L)
 {
     
     // 如果给定虚拟栈中索引处的元素可以转换为数字，则返回转换后的数字，否则报错。
-    BYTE cardIndex[34];
+    BYTE cardIndex[MAX_TOTAL_TYPE];
     memset(cardIndex, 0, sizeof(cardIndex));
     
     // int size = lua_gettop(L);//相当于#table
     // printf("size = %d\n", size);
     BYTE guiCard = luaL_checknumber(L, -1);
-    BYTE guiIndex = SwitchToCardIndex(guiCard);
+    BYTE guiIndex = MAX_TOTAL_TYPE;
+	if (guiCard > 0 && guiCard <= 0x37)
+	{
+		guiIndex = SwitchToCardIndex(guiCard);
+	}
     // printf("guiIndex = %d\n", guiIndex);
     lua_remove(L, -1);
     // lua_pop(L, -1);
@@ -442,15 +381,19 @@ static int l_hupai(lua_State *L)
         // printf("size = %d\n", size);
         BYTE card = luaL_checknumber(L, -1);
         // printf("card is %d\n", card);
-        cardIndex[SwitchToCardIndex(card)]++;
-        lua_remove(L, -1);
-        // printf("cardIndex[%d] = %d\n", SwitchToCardIndex(card), cardIndex[SwitchToCardIndex(card)]);
+		if (card > 0 && card <= 0x37)
+		{
+        	cardIndex[SwitchToCardIndex(card)]++;
+        	// printf("cardIndex[%d] = %d\n", SwitchToCardIndex(card), cardIndex[SwitchToCardIndex(card)]);
+		}
+		lua_remove(L, -1);
     }
     lua_remove(L, -1);
     // size = lua_gettop(L);//相当于#table
     // printf("size = %d\n", size);
 
-    int ishu = stArray.CheckCanHu(cardIndex, guiIndex);
+	// printf("check can hu, guiIndex is %d\n", guiIndex);
+    int ishu = stTssss.CheckCanHu(cardIndex, guiIndex);
 
     // printf("begin!\n");
     // auto start = chrono::system_clock::now();  
@@ -458,7 +401,7 @@ static int l_hupai(lua_State *L)
     // int ishu = 0;
     // for(int i = 0; i < 1000000; i++)
     // {
-    //     ishu = stArray.CheckCanHu(cardIndex, guiIndex);
+    //     ishu = stTssss.CheckCanHu(cardIndex, guiIndex);
     // }
 
     // auto end = chrono::system_clock::now();
@@ -477,29 +420,36 @@ static int l_hupai(lua_State *L)
 
 static int l_canhu(lua_State *L)
 {   
-    BYTE cardIndex[34];
+    BYTE cardIndex[MAX_TOTAL_TYPE];
     memset(cardIndex, 0, sizeof(cardIndex));
     BYTE guiCard = luaL_checknumber(L, -1);
-    BYTE guiIndex = SwitchToCardIndex(guiCard);
+    BYTE guiIndex = MAX_TOTAL_TYPE;
+	if (guiCard > 0 && guiCard <= 0x37)
+	{
+		guiIndex = SwitchToCardIndex(guiCard);
+	}
     lua_remove(L, -1);
     int rawlen = lua_rawlen(L, -1);
     for (int i = 0; i < rawlen; i++)
     {
         lua_rawgeti(L, -1, i + 1);
         BYTE card = luaL_checknumber(L, -1);
-        cardIndex[SwitchToCardIndex(card)]++;
-        lua_remove(L, -1);
+		if (card > 0 && card <= 0x37)
+		{
+        	cardIndex[SwitchToCardIndex(card)]++;
+		}
+		lua_remove(L, -1);
     }
     lua_remove(L, -1);
 
     vector<int> canhuvector;
     canhuvector.clear();
-    for (int j = 0; j < 34; j++)
+    for (int j = 0; j < MAX_TOTAL_TYPE; j++)
     {
         if (cardIndex[j] < 4)
         {
             cardIndex[j]++;
-            int hu = stArray.CheckCanHu(cardIndex, guiIndex);
+            int hu = stTssss.CheckCanHu(cardIndex, guiIndex);
             if (hu == 1)
             {
                 canhuvector.insert(canhuvector.begin(), j);
@@ -523,12 +473,16 @@ static int l_canhu(lua_State *L)
 static int l_tinghu(lua_State *L)
 {
     // 如果给定虚拟栈中索引处的元素可以转换为数字，则返回转换后的数字，否则报错。
-    BYTE cardIndex[34];
+    BYTE cardIndex[MAX_TOTAL_TYPE];
     memset(cardIndex, 0, sizeof(cardIndex));
     // int size = lua_gettop(L);//相当于#table
     // printf("size = %d\n", size);
     BYTE guiCard = luaL_checknumber(L, -1);
-    BYTE guiIndex = SwitchToCardIndex(guiCard);
+    BYTE guiIndex = MAX_TOTAL_TYPE;
+	if (guiCard > 0 && guiCard <= 0x37)
+	{
+		guiIndex = SwitchToCardIndex(guiCard);
+	}
     // printf("guiIndex = %d\n", guiIndex);
     lua_remove(L, -1);
     // lua_pop(L, -1);
@@ -543,28 +497,31 @@ static int l_tinghu(lua_State *L)
         // printf("size = %d\n", size);
         BYTE card = luaL_checknumber(L, -1);
         // printf("card is %d\n", card);
-        cardIndex[SwitchToCardIndex(card)]++;
-        lua_remove(L, -1);
-        // printf("cardIndex[%d] = %d\n", i, cardIndex[i]);
+		if (card > 0 && card <= 0x37)
+		{
+        	cardIndex[SwitchToCardIndex(card)]++;
+			// printf("cardIndex[%d] = %d\n", i, cardIndex[i]);
+		}
+		lua_remove(L, -1);
     }
     lua_remove(L, -1);
     // int size = lua_gettop(L);//相当于#table
     // printf("size = %d\n", size);
 
     map<int, vector<int>> tingmap;
-    for (int i = 0; i < 34; i++)
+    for (int i = 0; i < MAX_TOTAL_TYPE; i++)
 	{
 		if (cardIndex[i] > 0)
 		{
 			cardIndex[i]--;
 			vector<int>canhuvector;
 			canhuvector.clear();
-			for (int j = 0; j < 34; j++)
+			for (int j = 0; j < MAX_TOTAL_TYPE; j++)
 			{
 				if (cardIndex[j] < 4)
 				{
 					cardIndex[j]++;
-					int hu = stArray.CheckCanHu(cardIndex, guiIndex);
+					int hu = stTssss.CheckCanHu(cardIndex, guiIndex);
 					if (hu == 1)
 					{
 						canhuvector.insert(canhuvector.begin(), j);
